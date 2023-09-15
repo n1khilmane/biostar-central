@@ -161,12 +161,32 @@
       when: conda_installed is success
       with_items: "{{conda_environments}}"
 
-    - name: Get the biostar-central software
-      git:
-        repo: "{{ engine_git }}"
-        dest: "{{ engine_dir }}"
-        update: yes
+    # - name: Get the biostar-central software
+    #   git:
+    #     repo: "{{ engine_git }}"
+    #     dest: "{{ engine_dir }}"
+    #     update: yes
+  
+  #----------
 
+
+    - name: Step 1 - Download the software zip file
+      command: wget https://github.com/bioconductor/support.bioconductor.org/archive/refs/heads/master.zip -O /tmp/master.zip
+      register: wget_result
+
+    - name: Step 3 - Move unzipped files to the '/export/www/' directory
+      command: mv /tmp/support.bioconductor.org-master/* /export/www/
+      args:
+        creates: /export/www/
+      when: wget_result.rc == 0
+
+    - name: Remove the downloaded zip file
+      file:
+        path: /tmp/master.zip
+        state: absent
+
+
+    #-----------------------
     - name: Create scripts in runtime directories
       file:
         path: "{{item}}"
@@ -189,12 +209,12 @@
         state: directory
         mode: 0755
 
-    - name: Initialize local secrets
-      copy:
-        content: ""
-        dest: "{{ engine_dir }}/conf/run/site_secrets.py"
-        force: no
-        mode: 0644
+    # - name: Initialize local secrets
+    #   copy:
+    #     content: ""
+    #     dest: "{{ engine_dir }}/conf/run/site_secrets.py"
+    #     force: no
+    #     mode: 0644
 
     - name: Initialize scripts
       copy:
@@ -239,15 +259,15 @@
        path: /etc/nginx/sites-enabled/default
        state: absent
 
-    - name: Install conda requirements
-      shell: "source {{conda_dir}}/etc/profile.d/conda.sh &&
-             conda activate {{conda_env}}  &&
-             conda config --add channels conda-forge &&
-             conda install -y --file conf/conda-packages.txt &&
-             pip install -r conf/requirements-to-freeze.txt"
-      args:
-        executable: /bin/bash
-        chdir: "{{ engine_dir }}"
+    # - name: Install conda requirements
+    #   shell: "source {{conda_dir}}/etc/profile.d/conda.sh &&
+    #          conda activate {{conda_env}}  &&
+    #          conda config --add channels conda-forge &&
+    #          conda install -y --file conf/conda-packages.txt &&
+    #          pip install -r conf/requirements-to-freeze.txt"
+    #   args:
+    #     executable: /bin/bash
+    #     chdir: "{{ engine_dir }}"
 
     - name: Create the first data migration.
       shell: "./server-migrate.sh"
