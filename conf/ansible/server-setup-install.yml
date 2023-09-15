@@ -1,0 +1,259 @@
+---
+- hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - include_vars: variables.yml
+
+    - name: Add universe repository
+      become: yes
+      apt_repository:
+        repo: deb http://archive.ubuntu.com/ubuntu focal universe
+        state: present
+
+    - name: Update and upgrade packages.
+      become: yes
+      apt:
+        upgrade=yes
+        update_cache=yes
+        cache_valid_time=86400 # One day
+
+    - name: Create the bioinfo group
+      become: yes
+      group:
+        name: bioinfo
+
+    - name: Create the www group
+      become: yes
+      group:
+        name: www
+
+    - name: Create the www user
+      become: yes
+      user:
+        name: www
+        shell: /bin/bash
+        groups: www, bioinfo, sudo
+
+    - name: Set authorized key for www user
+      become: yes
+      authorized_key:
+        user: www
+        state: present
+        key: "{{ lookup('file', lookup('env','HOME') + '/.ssh/id_rsa.pub') }}"
+
+    - name: Install required packages
+      become: yes
+      vars:
+        packages: [ 'aptitude', 'nginx', 'postgresql', 'software-properties-common', 'python3-pip', 'libpq-dev',
+                    'curl', 'git', 'ufw', 'fail2ban', 'byacc', 'zlib1g-dev', 'cmake', 'build-essential', 'supervisor',
+                     'acl', 'python3-psycopg2', 'redis-server', 'memcached']
+      apt:
+        name: "{{ packages }}"
+
+    - name: Allow SSH through the firewall
+      become: yes
+      ufw: rule=allow port={{item}}
+      with_items:
+        - ssh
+        - http
+        - https
+
+    - name: Enable firewall
+      become: yes
+      ufw: state=enabled policy=deny
+
+    - name: Create supporting directories
+      become: yes
+      file:
+        path: "{{item}}"
+        state: directory
+        owner: www
+        group: www
+        mode: 0755
+      with_items:
+        - "{{ src_dir }}"
+        - "{{ bin_dir }}"
+        - "{{ ref_dir }}"
+        - "{{ engine_dir }}"
+
+    - name: Allow write access to configuration directories
+      become: yes
+      file:
+        path: "{{ item }}"
+        owner: www
+        group: www
+        mode: 0755
+      with_items:
+        - /etc/nginx/sites-enabled
+        - /etc/supervisor/conf.d
+
+    - name: Create postgresql database user
+      become: yes
+      become_user: postgres
+      postgresql_user:
+        name: www
+        password: md5437a687918743dac1889ef033bcb5bbd
+        role_attr_flags: CREATEDB
+      no_log: true
+
+
+    - name: Create postgresql database
+      become: yes
+      become_user: postgres
+      postgresql_db:
+        name: biostardb
+        owner: www
+      no_log: true
+
+
+    - name: Check if bash profile already exists
+      stat:
+        path: ~/.bash_profile
+      register: profile_created
+
+    - name: Set up bash profile
+      get_url:
+        url: http://data.biostarhandbook.com/install/bash_profile.txt
+        dest: ~/.bash_profile
+        mode: 0440
+      when: profile_created.stat.exists == False
+
+    - name: Get bashrc from remote
+      get_url:
+        url: http://data.biostarhandbook.com/install/bashrc.txt
+        dest: ~/.handbookrc
+        mode: 0440
+      when: profile_created.stat.exists == False
+
+    - name: Apply the biostar bash customizations
+      lineinfile:
+        dest: ~/.bashrc
+        line: source ~/.handbookrc
+      when: profile_created.stat.exists == False
+
+    - name: Check if conda has already been installed
+      stat: path={{ conda_dir }}/bin/conda
+      register: bin_conda
+      changed_when: bin_conda.stat.exists == False
+
+    - name: Download conda installer
+      get_url:
+        url={{ conda_url }}
+        dest=/tmp/conda.sh
+        mode=0755
+      register: conda_downloaded
+      when: bin_conda.stat.exists == False
+
+    - name: Install conda
+      shell: "/tmp/conda.sh -b -p {{ conda_dir }} creates={{ conda_dir }} executable=/bin/bash"
+      register: conda_installed
+      when: conda_downloaded is success
+
+    - name: Create environments
+      shell: "{{ conda_dir }}/bin/conda create --yes -q -n {{ item.name }} python={{ item.python_version }} creates={{ conda_dir }}/envs/{{ item.name }}"
+      when: conda_installed is success
+      with_items: "{{conda_environments}}"
+
+    - name: Add the conda path to the bash rc
+      shell: "{{ conda_dir }}/bin/conda init bash"
+      when: conda_installed is success
+      with_items: "{{conda_environments}}"
+
+    - name: Get the biostar-central software
+      git:
+        repo: "{{ engine_git }}"
+        dest: "{{ engine_dir }}"
+        update: yes
+
+    - name: Create scripts in runtime directories
+      file:
+        path: "{{item}}"
+        state: directory
+        owner: www
+        group: www
+        mode: 0755
+      with_items:
+        - "{{ scripts_dir }}"
+
+    - name: Link directory to the home
+      file:
+        src: "{{ engine_dir }}"
+        dest: "~/biostar-central"
+        state: link
+
+    - name: Make the spooler directory
+      file:
+        path: "{{ engine_dir }}/export/spooler"
+        state: directory
+        mode: 0755
+
+    - name: Initialize local secrets
+      copy:
+        content: ""
+        dest: "{{ engine_dir }}/conf/run/site_secrets.py"
+        force: no
+        mode: 0644
+
+    - name: Initialize scripts
+      copy:
+        remote_src: true
+        force: no
+        src: "{{ engine_dir }}/conf/scripts/{{item}}"
+        dest: "{{ engine_dir }}/{{ item }}"
+        mode: u+rwx,g+rx,o+rx
+      with_items:
+        - server-migrate.sh
+        - server-reset.sh
+        - server-cleanup.sh
+        - server-backup.sh
+
+    - name: Copy settings file to runtime directories
+      copy:
+        remote_src: true
+        force: no
+        src: "{{ engine_dir }}/conf/site/{{item}}"
+        dest: "{{ engine_dir }}/conf/run/{{ item }}"
+      with_items:
+        - site_nginx.conf
+        - site_supervisor.conf
+        - site_settings.py
+        - site_wsgi.py
+        - site_uwsgi.ini
+
+    - name: Link nginx configuration
+      file:
+        src:  "{{ engine_dir }}/conf/run/site_nginx.conf"
+        dest:  /etc/nginx/sites-enabled/site_nginx.conf
+        state: link
+
+    - name: Link supervisor configuration
+      file:
+        src:  "{{ engine_dir }}/conf/run/site_supervisor.conf"
+        dest:  /etc/supervisor/conf.d/site_supervisor.conf
+        state: link
+
+    - name: Remove default nginx site
+      file:
+       path: /etc/nginx/sites-enabled/default
+       state: absent
+
+    - name: Install conda requirements
+      shell: "source {{conda_dir}}/etc/profile.d/conda.sh &&
+             conda activate {{conda_env}}  &&
+             conda config --add channels conda-forge &&
+             conda install -y --file conf/conda-packages.txt &&
+             pip install -r conf/requirements-to-freeze.txt"
+      args:
+        executable: /bin/bash
+        chdir: "{{ engine_dir }}"
+
+    - name: Create the first data migration.
+      shell: "./server-migrate.sh"
+      args:
+        executable: /bin/bash
+        chdir: "{{ engine_dir }}"
+
+    - name: Ensure Redis is started
+      service: name=redis-server state=started enabled=yes
