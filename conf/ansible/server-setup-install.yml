@@ -269,11 +269,11 @@
     #     executable: /bin/bash
     #     chdir: "{{ engine_dir }}"
 
-    - name: Create the first data migration.
-      shell: "./server-migrate.sh"
-      args:
-        executable: /bin/bash
-        chdir: "{{ engine_dir }}"
+    # - name: Create the first data migration.
+    #   shell: "./server-migrate.sh"
+    #   args:
+    #     executable: /bin/bash
+    #     chdir: "{{ engine_dir }}"
 
     - name: Ensure Redis is started
       service: name=redis-server state=started enabled=yes
